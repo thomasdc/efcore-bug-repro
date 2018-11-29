@@ -58,6 +58,8 @@ namespace efcore_bug_repro
         {
             public Aggregate Aggregate { get; private set; }
 
+            public string UpdateData { get; protected set; }
+
             protected LogLine()
             {
                 // Required by EF Core
@@ -73,7 +75,11 @@ namespace efcore_bug_repro
 
         public class StatusUpdateLogLine : LogLine
         {
-            public Data UpdateData { get; private set; }
+            public Data StatusUpdateData
+            {
+                get => JsonConvert.DeserializeObject<Data>(UpdateData, new StringEnumConverter());
+                set => UpdateData = JsonConvert.SerializeObject(value, new StringEnumConverter());
+            }
 
             private StatusUpdateLogLine()
             {
@@ -82,7 +88,7 @@ namespace efcore_bug_repro
 
             public StatusUpdateLogLine(Aggregate aggregate, Status? fromStatus, Status? toStatus) : base(aggregate)
             {
-                UpdateData = new Data
+                StatusUpdateData = new Data
                 {
                     From = fromStatus,
                     To = toStatus
@@ -97,13 +103,17 @@ namespace efcore_bug_repro
 
             public override string ToString()
             {
-                return $"Status updated from '{UpdateData.From}' to '{UpdateData.To}'";
+                return $"Status updated from '{StatusUpdateData.From}' to '{StatusUpdateData.To}'";
             }
         }
 
         public class OwnerChangedLogLine : Program.LogLine
         {
-            public Data UpdateData { get; private set; }
+            public Data OwnerChangedUpdateData
+            {
+                get => JsonConvert.DeserializeObject<Data>(UpdateData, new StringEnumConverter());
+                set => UpdateData = JsonConvert.SerializeObject(value, new StringEnumConverter());
+            }
 
             private OwnerChangedLogLine()
             {
@@ -112,7 +122,7 @@ namespace efcore_bug_repro
 
             public OwnerChangedLogLine(Aggregate aggregate, string fromOwner, string toOwner) : base(aggregate)
             {
-                UpdateData = new Data
+                OwnerChangedUpdateData = new Data
                 {
                     From = fromOwner,
                     To = toOwner
@@ -127,19 +137,12 @@ namespace efcore_bug_repro
 
             public override string ToString()
             {
-                return $"Owner updated from '{UpdateData.From}' to '{UpdateData.To}'";
+                return $"Owner updated from '{OwnerChangedUpdateData.From}' to '{OwnerChangedUpdateData.To}'";
             }
         }
 
         public class EntityContext : DbContext
         {
-            private readonly bool _makeItCrash;
-
-            public EntityContext(bool makeItCrash)
-            {
-                _makeItCrash = makeItCrash;
-            }
-
             protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder) => optionsBuilder.UseSqlServer(@"Server=(LocalDB)\MSSQLLocalDB;Database=EfCoreBugRepro;Trusted_Connection=True;MultipleActiveResultSets=True;");
 
             protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -150,18 +153,15 @@ namespace efcore_bug_repro
                 modelBuilder.Entity<Aggregate>().Metadata.FindNavigation($"{nameof(Aggregate.Logs)}").SetPropertyAccessMode(PropertyAccessMode.Field);
 
                 modelBuilder.Entity<LogLine>().HasKey(_ => _.Id);
+                modelBuilder.Entity<LogLine>().Property(_ => _.UpdateData);
                 modelBuilder.Entity<LogLine>().HasDiscriminator<string>("update-type")
                     .HasValue<StatusUpdateLogLine>("StatusUpdate")
                     .HasValue<OwnerChangedLogLine>("OwnerChanged");
                 modelBuilder.Entity<LogLine>().HasOne(_ => _.Aggregate).WithMany(_ => _.Logs);
 
-                modelBuilder.Entity<StatusUpdateLogLine>().Property(_ => _.UpdateData).HasColumnName(_makeItCrash ? "UpdateData" : "StatusUpdateData").HasConversion(
-                    data => JsonConvert.SerializeObject(data, new StringEnumConverter()),
-                    data => JsonConvert.DeserializeObject<StatusUpdateLogLine.Data>(data, new StringEnumConverter()));
+                modelBuilder.Entity<StatusUpdateLogLine>().Ignore(_ => _.StatusUpdateData);
 
-                modelBuilder.Entity<OwnerChangedLogLine>().Property(_ => _.UpdateData).HasColumnName(_makeItCrash ? "UpdateData" : "OwnerChangedData").HasConversion(
-                    data => JsonConvert.SerializeObject(data, new StringEnumConverter()),
-                    data => JsonConvert.DeserializeObject<OwnerChangedLogLine.Data>(data, new StringEnumConverter()));
+                modelBuilder.Entity<OwnerChangedLogLine>().Ignore(_ => _.OwnerChangedUpdateData);
             }
         }
 
@@ -169,8 +169,7 @@ namespace efcore_bug_repro
         {
             try
             {
-                var makeItCrash = true;
-                using (var context = new EntityContext(makeItCrash))
+                using (var context = new EntityContext())
                 {
                     context.Database.EnsureDeleted();
                     context.Database.EnsureCreated();
@@ -181,7 +180,7 @@ namespace efcore_bug_repro
                     context.SaveChanges();
                 }
 
-                using (var context = new EntityContext(makeItCrash))
+                using (var context = new EntityContext())
                 {
                     var aggregates = context.Set<Aggregate>().Include(_ => _.Logs).ToList();
                 }
